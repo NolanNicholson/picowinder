@@ -25,6 +25,22 @@ Any pins not listed on both the GamePort side and the Pico side can be left disc
 | 12 (MIDI TX)                       | 220 ohm              | Pin 1 (GP0)     |                                            |
 | 14 (Button 4; Sidewinder Data 2)   |                      | Pin 9 (GP6)     |                                            |
 
+```
+  Gameport             RP2040
+
+  01 Vcc     ----------- VBUS
+  02 SwCLK   ----------- GP3
+  03 SwTrig0 --|2k2|-o-- GP2
+  04 GND     --------+-- GND
+  ...                |
+  07 SwData0 --------+-- GP4
+  ...                |
+  10 SwData1 --------+-- GP5
+  11 SwTrig1 --|2k2|-'
+  12 MIDI TX --|220|---- GP0
+  ...
+  14 SwData2 ----------- GP6
+```
 
 Alternately you can connect the Raspberry Pi Pico directly to the PCB using the following pinout, this will allow you to mount the Pico inside the housing of the controller.
 
