@@ -26,8 +26,8 @@ endif()
 # ====================================================================================
 set(PICO_BOARD pico CACHE STRING "Board type")
 
-# Pull in Raspberry Pi Pico SDK (must be before project)
-include(pico_sdk_import.cmake)
+# Pull in SDK (must be before project)
+find_package(pico-sdk CONFIG)
 
 project(picowinder C CXX ASM)
 
