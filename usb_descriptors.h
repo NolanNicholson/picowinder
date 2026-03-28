@@ -4,7 +4,6 @@
 #include "common/tusb_common.h"
 #include "device/usbd.h"
 
-#include "hid_pid.h"
 #include "config.h"
 
 #define HID_UNIT_SECONDS 0x1003 // Documented as "Eng Lin:Time" in the PID spec
