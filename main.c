@@ -104,25 +104,25 @@ static void ffb_handshake(void)
     pio_sm_set_enabled(pio, sm, false);
     ffb_handshake_program_init(pio, sm, offset_handshake, 100000, PIN_TRIGGER);
 
-    // Populate the state machine with our pulses/delays.
+    // Pulse groups and the delay before each (0.1 ms units): "1-4-3-2-2-3-2".
     // Delays (ms):            7     30    15    78     4    59
     uint delays[7] = { 1000,   70,   300,  150,  780,   40,  590   };
     // Pulses (count):       1     4     3     2     2     3     2
     uint pulses[7] = {       1,    4,    3,    2,    2,    3,    2 };
-    for (int i = 0; i < 7; i++)
+
+    // The TX FIFO holds only 4 words, so feed the 7 groups as it drains.
+    pio_sm_set_enabled(pio, sm, true);
+    for (int i = 0; i < 7; )
     {
-        uint32_t word = (pulses[i]-1) << 16 | (delays[i] - 1);
-        pio_sm_put(pio, sm, word);
+        if (!pio_sm_is_tx_fifo_full(pio, sm))
+        {
+            pio_sm_put(pio, sm, (pulses[i] - 1) << 16 | (delays[i] - 1));
+            i++;
+        }
     }
 
-    // Activate the state machine for sending the FFB handshake
-    pio_sm_set_enabled(pio, sm, true);
-
-    // Wait for the state machine to finish enabling FFB.
-    // We could do this via an IRQ, but we know how long it takes.
-    sleep_ms(400);
-
-    // The FFB handshake program is done now
+    // The last group (59 ms delay + 2 pulses) is still being sent.
+    sleep_ms(80);
     pio_sm_set_enabled(pio, sm, false);
 
     // Now that the handshake is done, we can send MIDI commands.
