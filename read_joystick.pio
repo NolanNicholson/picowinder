@@ -1,4 +1,6 @@
 .program read_joystick
+    pull block          ; Wait for the main loop to request a read, so reads
+                        ; never overlap MIDI traffic to the base (see bus.h)
     set pins, 1 [19]    ; Trigger pulse notifies joystick to send data
     set pins, 0
 
@@ -10,12 +12,6 @@ get_bit:
     jmp x-- get_bit
 
     irq wait 0          ; All data is gathered, so send IRQ
-
-    set x, 31           ; Cooldown before triggering again
-wait_loop:
-    nop [31]
-    nop [31]
-    jmp x-- wait_loop
 
 
 % c-sdk {
@@ -31,7 +27,6 @@ void read_joystick_program_init(
     sm_config_set_set_pins(&c, pin_trigger, 1);
     sm_config_set_in_pins(&c, pin_d0);
     sm_config_set_in_shift(&c, true, true, 24);
-    sm_config_set_fifo_join(&c, PIO_FIFO_JOIN_RX);
 
     // Connect PIO to the trigger pin, and set its direction
     pio_gpio_init(pio, pin_trigger);
