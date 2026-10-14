@@ -103,6 +103,7 @@ uint8_t ffb_midi_last_assigned_effect_id();
 void ffb_midi_set_autocenter(uart_inst_t *uart, bool enabled);
 int ffb_midi_define_effect(uart_inst_t *uart, struct Effect *effect);
 void ffb_midi_erase(uart_inst_t *uart, int effect_id);
+void ffb_midi_replay_state(uart_inst_t *uart);
 void ffb_midi_play_solo(uart_inst_t *uart, int effect_id);
 void ffb_midi_play(uart_inst_t *uart, int effect_id);
 void ffb_midi_pause(uart_inst_t *uart, int effect_id);
