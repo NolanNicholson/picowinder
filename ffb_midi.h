@@ -91,6 +91,10 @@ struct Effect
 #define MIDI_ALL_EFFECTS 0x7f
 
 
+// All MIDI to the base goes through this. The firmware queues the bytes for
+// release between joystick reads (see bus.h).
+void midi_write(uart_inst_t *uart, const uint8_t *data, size_t len);
+
 int ffb_midi_get_free_effect_id();
 size_t ffb_midi_get_num_available_effects();
 bool ffb_midi_last_add_succeeded();

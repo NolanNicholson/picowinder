@@ -65,7 +65,7 @@ void ffb_midi_set_autocenter(uart_inst_t *uart, bool enabled)
     };
 
     autocenter_cmd[1] = enabled ? 0x01 : 0x06; 
-    uart_write_blocking(uart, autocenter_cmd, sizeof(autocenter_cmd));
+    midi_write(uart, autocenter_cmd, sizeof(autocenter_cmd));
 }
 
 /*
@@ -180,7 +180,7 @@ int ffb_midi_define_effect(uart_inst_t *uart, struct Effect *effect)
 
     effect_data[next_index++] = 0xf7; // SysEx end
 
-    uart_write_blocking(uart, effect_data, next_index);
+    midi_write(uart, effect_data, next_index);
 
     last_add_succeeded = true;
     last_assigned_effect_id = effect_id;
@@ -195,7 +195,7 @@ void ffb_midi_erase(uart_inst_t *uart, int effect_id)
     if (effect_id < 0) { return; }
 
     uint8_t msg[3] = { 0xb5, 0x10, effect_id & 0x7f };
-    uart_write_blocking(uart, msg, sizeof(msg));
+    midi_write(uart, msg, sizeof(msg));
 
     if (is_real_effect_slot(effect_id))
     {
@@ -209,7 +209,7 @@ void ffb_midi_play_solo(uart_inst_t *uart, int effect_id)
     if (effect_id < 0) { return; }
 
     uint8_t msg[3] = { 0xb5, 0x00, effect_id & 0x7f };
-    uart_write_blocking(uart, msg, sizeof(msg));
+    midi_write(uart, msg, sizeof(msg));
 }
 
 void ffb_midi_play(uart_inst_t *uart, int effect_id)
@@ -217,7 +217,7 @@ void ffb_midi_play(uart_inst_t *uart, int effect_id)
     if (effect_id < 0) { return; }
 
     uint8_t msg[3] = { 0xb5, 0x20, effect_id & 0x7f };
-    uart_write_blocking(uart, msg, sizeof(msg));
+    midi_write(uart, msg, sizeof(msg));
 }
 
 void ffb_midi_pause(uart_inst_t *uart, int effect_id)
@@ -225,7 +225,7 @@ void ffb_midi_pause(uart_inst_t *uart, int effect_id)
     if (effect_id < 0) { return; }
 
     uint8_t msg[3] = { 0xb5, 0x30, effect_id & 0x7f };
-    uart_write_blocking(uart, msg, sizeof(msg));
+    midi_write(uart, msg, sizeof(msg));
 }
 
 void ffb_midi_modify(uart_inst_t *uart, int effect_id, uint8_t param, uint16_t value)
@@ -242,5 +242,5 @@ void ffb_midi_modify(uart_inst_t *uart, int effect_id, uint8_t param, uint16_t v
 
     uint8_t msg[6] = {
         0xb5, param, effect_id & 0x7f, 0xa5, lo7(value), hi7(value) };
-    uart_write_blocking(uart, msg, sizeof(msg));
+    midi_write(uart, msg, sizeof(msg));
 }

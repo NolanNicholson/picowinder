@@ -9,6 +9,7 @@
 #include "ffb_handshake.pio.h"
 #include "read_joystick.pio.h"
 #include "ffb_midi.h"
+#include "bus.h"
 
 #include "config.h"
 
@@ -39,6 +40,9 @@ uint rxFifoEntries;
 uint32_t raw0;
 uint32_t raw1;
 uint64_t joystickStateRaw;
+
+// Completed joystick scans, counted by the read IRQ.
+volatile uint32_t scan_count = 0;
 
 
 void joystickReadIRQ()
@@ -72,6 +76,8 @@ void joystickReadIRQ()
     report.twist = joystickState.twist;
     report.throttle = joystickState.throttle;
     report.hat = joystickState.hat;
+
+    scan_count++;
 
     pio_interrupt_clear(pio, 0);
 }
@@ -150,7 +156,8 @@ static void ffb_handshake(void)
     sleep_ms(80);
     pio_sm_set_enabled(pio, sm, false);
 
-    // MIDI start-up, with the driver's delays.
+    // MIDI start-up, with the driver's delays. Written directly rather than
+    // queued: no joystick reads run during the handshake.
     uart_write_blocking(uart0, init_reset, sizeof(init_reset));
     sleep_ms(20);
     uart_write_blocking(uart0, init_config, sizeof(init_config));
@@ -163,6 +170,24 @@ static void ffb_handshake(void)
     uart_write_blocking(uart0, init_stop_all, sizeof(init_stop_all));
 #endif
     uart_tx_wait_blocking(uart0);
+}
+
+// MIDI to the base is queued and released between joystick reads (see bus.h).
+// If the queue is full, flush it blocking rather than drop part of a message.
+void midi_write(uart_inst_t *uart, const uint8_t *data, size_t len)
+{
+    if (!midi_queue_push(data, len))
+    {
+        uint8_t chunk[64];
+        size_t n;
+        while ((n = midi_queue_pop(chunk, sizeof(chunk))) > 0) { uart_write_blocking(uart, chunk, n); }
+        if (!midi_queue_push(data, len)) { uart_write_blocking(uart, data, len); }
+    }
+}
+
+static inline bool uart_tx_idle(uart_inst_t *uart)
+{
+    return (uart_get_hw(uart)->fr & UART_UARTFR_BUSY_BITS) == 0;
 }
 
 int main()
@@ -196,8 +221,8 @@ int main()
     irq_set_exclusive_handler(pio_irq, joystickReadIRQ);
     irq_set_enabled(pio_irq, true);
 
-    // Activate the state machine for reading the stick.
-    // This one stays on, loops, and keeps firing IRQs.
+    // Activate the state machine for reading the stick. It waits for the main
+    // loop to request each read (bus.h) and fires an IRQ when a packet is in.
     pio_sm_set_enabled(pio, sm, true);
 
 /*
@@ -244,11 +269,33 @@ the trigger is held.
 
 #endif
 
+    struct bus bus;
+    bus_init(&bus, time_us_32());
+
     // Main USB loop
     while (1)
     {
         tud_task(); // tinyusb device task
         hid_task();
+
+        // Interleave stick reads and MIDI so they never overlap on the base.
+        uint32_t now = time_us_32();
+        if (bus_should_trigger(&bus, now, scan_count, uart_tx_idle(uart0)))
+        {
+            pio_sm_put(pio, sm, 0);
+        }
+        else
+        {
+            size_t n = bus_midi_budget(&bus, now, scan_count, midi_queue_len());
+            if (n > 0)
+            {
+                uint8_t chunk[32];
+                if (n > sizeof(chunk)) { n = sizeof(chunk); }
+                n = midi_queue_pop(chunk, n);
+                uart_write_blocking(uart0, chunk, n);   // fits in the 32-byte TX FIFO
+                bus_midi_sent(&bus, now, n);
+            }
+        }
 
 #ifdef EXAMPLE_EFFECTS
         bool fire = (joystickState.buttons & 0x0001) != 0;
