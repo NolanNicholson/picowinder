@@ -91,25 +91,18 @@ void hid_task()
 }
 
 
-int main()
+static uint offset_handshake;
+static uint offset_readjoy;
+
+// Send the trigger-pulse sequence that switches the Sidewinder into
+// digital/MIDI mode, then disable its stock auto-center.
+static void ffb_handshake(void)
 {
-    tud_init(0);
+    const PIO pio = pio0;
+    const uint sm = 0;
 
-    // Hardware UART setup.
-    // The default is 8 data bits, no parity bit, and 1 stop bit.
-    uart_init(uart0, 31250);
-    gpio_set_function(PIN_MIDI_TX, UART_FUNCSEL_NUM(uart0, PIN_MIDI_TX));
-
-    // PIO setup
-    PIO pio = pio0;
-    uint sm = 0;
-
-    // Handshake PIO program setup
-    uint offset_handshake = pio_add_program(pio, &ffb_handshake_program);
-    uint freq_handshake = 100000;
-
-    ffb_handshake_program_init(pio, sm, offset_handshake,
-            freq_handshake, PIN_TRIGGER);
+    pio_sm_set_enabled(pio, sm, false);
+    ffb_handshake_program_init(pio, sm, offset_handshake, 100000, PIN_TRIGGER);
 
     // Populate the state machine with our pulses/delays.
     // Delays (ms):            7     30    15    78     4    59
@@ -137,14 +130,31 @@ int main()
     // We'll start by disabling the built-in auto-center effect.
     ffb_midi_set_autocenter(uart0, false);
 #endif // DISABLE_AUTO_CENTER
+}
 
-    // Read-data PIO program setup
-    uint offset_readjoy = pio_add_program(pio, &read_joystick_program);
-    uint freq_readjoy = 1000000;
+int main()
+{
+    tud_init(0);
 
-    // We blow away the initial FFB-handshake state machine config,
+    // Hardware UART setup.
+    // The default is 8 data bits, no parity bit, and 1 stop bit.
+    uart_init(uart0, 31250);
+    gpio_set_function(PIN_MIDI_TX, UART_FUNCSEL_NUM(uart0, PIN_MIDI_TX));
+
+    // PIO setup
+    PIO pio = pio0;
+    uint sm = 0;
+
+    // Load both PIO programs up front.
+    offset_handshake = pio_add_program(pio, &ffb_handshake_program);
+    offset_readjoy = pio_add_program(pio, &read_joystick_program);
+
+    ffb_handshake();
+
+    // Read-data PIO program setup.
+    // We blow away the FFB-handshake state machine config,
     // because we don't need it anymore.
-    read_joystick_program_init(pio, sm, offset_readjoy, freq_readjoy,
+    read_joystick_program_init(pio, sm, offset_readjoy, 1000000,
             PIN_TRIGGER, PIN_CLK, PIN_D0, PIN_D1, PIN_D2);
 
     // Set up our IRQ to read the collected joystick data
