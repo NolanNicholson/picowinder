@@ -94,8 +94,33 @@ void hid_task()
 static uint offset_handshake;
 static uint offset_readjoy;
 
+// MIDI initialisation sent after the trigger-pulse handshake, as Microsoft's
+// driver does it (see adapt-ffb-joy's SidewinderFFBMIDI.md and
+// FfbproEnableInterrupts()). The meaning of the device parameters written to
+// effect 0x7f (params 0x40..0x74) is undocumented.
+static const uint8_t init_reset[]  = { 0xc5, 0x01 };   // reset: stop and free all effects
+static const uint8_t init_config[] = { 0xf0, 0x00, 0x01, 0x0a, 0x01, 0x10, 0x05, 0x6b, 0xf7 };
+static const uint8_t init_device_params[] = {
+    0xb5, 0x40, 0x7f, 0xa5, 0x72, 0x57,
+    0xb5, 0x44, 0x7f, 0xa5, 0x3c, 0x43,
+    0xb5, 0x48, 0x7f, 0xa5, 0x7e, 0x00,
+    0xb5, 0x4c, 0x7f, 0xa5, 0x04, 0x00,
+    0xb5, 0x50, 0x7f, 0xa5, 0x02, 0x00,
+    0xb5, 0x54, 0x7f, 0xa5, 0x02, 0x00,
+    0xb5, 0x58, 0x7f, 0xa5, 0x00, 0x7e,
+    0xb5, 0x5c, 0x7f, 0xa5, 0x3c, 0x00,
+    0xb5, 0x60, 0x7f, 0xa5, 0x14, 0x65,
+    0xb5, 0x64, 0x7f, 0xa5, 0x7e, 0x6b,
+    0xb5, 0x68, 0x7f, 0xa5, 0x36, 0x00,
+    0xb5, 0x6c, 0x7f, 0xa5, 0x28, 0x00,
+    0xb5, 0x70, 0x7f, 0xa5, 0x66, 0x4c,
+    0xb5, 0x74, 0x7f, 0xa5, 0x7e, 0x01,
+};
+static const uint8_t init_gain_max[] = { 0xb5, 0x7c, 0x7f, 0xa5, 0x7f, 0x00 };
+static const uint8_t init_stop_all[] = { 0xc5, 0x06 };  // stop all, including the stock auto-center
+
 // Send the trigger-pulse sequence that switches the Sidewinder into
-// digital/MIDI mode, then disable its stock auto-center.
+// digital/MIDI mode, then initialise it the way Microsoft's driver does.
 static void ffb_handshake(void)
 {
     const PIO pio = pio0;
@@ -125,11 +150,19 @@ static void ffb_handshake(void)
     sleep_ms(80);
     pio_sm_set_enabled(pio, sm, false);
 
-    // Now that the handshake is done, we can send MIDI commands.
+    // MIDI start-up, with the driver's delays.
+    uart_write_blocking(uart0, init_reset, sizeof(init_reset));
+    sleep_ms(20);
+    uart_write_blocking(uart0, init_config, sizeof(init_config));
+    sleep_ms(57);
+    uart_write_blocking(uart0, init_device_params, sizeof(init_device_params));
+    uart_write_blocking(uart0, init_reset, sizeof(init_reset));
+    sleep_ms(70);
+    uart_write_blocking(uart0, init_gain_max, sizeof(init_gain_max));
 #ifdef DISABLE_AUTO_CENTER
-    // We'll start by disabling the built-in auto-center effect.
-    ffb_midi_set_autocenter(uart0, false);
-#endif // DISABLE_AUTO_CENTER
+    uart_write_blocking(uart0, init_stop_all, sizeof(init_stop_all));
+#endif
+    uart_tx_wait_blocking(uart0);
 }
 
 int main()
