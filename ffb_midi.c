@@ -2,6 +2,9 @@
 
 enum MidiEffectType effects_assigned[EFFECT_MEMORY_START + EFFECT_MEMORY_SIZE] = { 0 };
 
+// Longest effect SysEx: 32 bytes of header/params + checksum + 0xf7.
+#define MAX_EFFECT_SYSEX 34
+
 int ffb_midi_get_free_effect_id()
 {
     for (int i = EFFECT_MEMORY_START; i < EFFECT_MEMORY_START + EFFECT_MEMORY_SIZE; i++)
@@ -70,7 +73,7 @@ int ffb_midi_define_effect(uart_inst_t *uart, struct Effect *effect)
     // and any upper nibble besides 0x2* will fail.
     uint8_t flags = effect->play_immediately ? 0x24 : 0x23;
 
-    uint8_t effect_data[33] = {
+    uint8_t effect_data[MAX_EFFECT_SYSEX] = {
         0xf0,                           // 0: SysEx start - effect data
         0x00, 0x01, 0x0a, 0x01,         // 1..4: Effect header
         flags,                          // 5: Effect flags?
@@ -143,6 +146,11 @@ int ffb_midi_define_effect(uart_inst_t *uart, struct Effect *effect)
             next_index = 16;
 
             break;
+
+        default:
+            // Unknown type: send nothing and report failure.
+            last_add_succeeded = false;
+            return -1;
     }
 
     // Calculate and write checksum
