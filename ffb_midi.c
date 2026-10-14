@@ -2,6 +2,23 @@
 
 enum MidiEffectType effects_assigned[EFFECT_MEMORY_START + EFFECT_MEMORY_SIZE] = { 0 };
 
+// Last value sent for each (effect, modify parameter), or -1 if none. Games
+// resend unchanged parameters many times a second, and MIDI runs at only
+// 31250 baud, so modifies that wouldn't change anything are skipped. A row is
+// cleared whenever its slot is (re)allocated or freed.
+static int32_t modify_cache[EFFECT_MEMORY_START + EFFECT_MEMORY_SIZE][0x80];
+
+static inline bool is_real_effect_slot(int effect_id)
+{
+    return effect_id >= EFFECT_MEMORY_START
+        && effect_id < EFFECT_MEMORY_START + EFFECT_MEMORY_SIZE;
+}
+
+static void clear_modify_cache(int effect_id)
+{
+    for (int p = 0; p < 0x80; p++) { modify_cache[effect_id][p] = -1; }
+}
+
 // Longest effect SysEx: 32 bytes of header/params + checksum + 0xf7.
 #define MAX_EFFECT_SYSEX 34
 
@@ -168,6 +185,8 @@ int ffb_midi_define_effect(uart_inst_t *uart, struct Effect *effect)
     last_add_succeeded = true;
     last_assigned_effect_id = effect_id;
     effects_assigned[effect_id] = effect->type;
+    // Forget cached values from the slot's previous effect.
+    clear_modify_cache(effect_id);
     return effect_id;
 }
 
@@ -178,7 +197,11 @@ void ffb_midi_erase(uart_inst_t *uart, int effect_id)
     uint8_t msg[3] = { 0xb5, 0x10, effect_id & 0x7f };
     uart_write_blocking(uart, msg, sizeof(msg));
 
-    effects_assigned[effect_id] = MIDI_ET_NONE;
+    if (is_real_effect_slot(effect_id))
+    {
+        effects_assigned[effect_id] = MIDI_ET_NONE;
+        clear_modify_cache(effect_id);
+    }
 }
 
 void ffb_midi_play_solo(uart_inst_t *uart, int effect_id)
@@ -208,6 +231,14 @@ void ffb_midi_pause(uart_inst_t *uart, int effect_id)
 void ffb_midi_modify(uart_inst_t *uart, int effect_id, uint8_t param, uint16_t value)
 {
     if (effect_id < 0) { return; }
+
+    // Only real effect slots are deduplicated; device-wide modifies (0x7f)
+    // always go out.
+    if (is_real_effect_slot(effect_id) && param < 0x80)
+    {
+        if (modify_cache[effect_id][param] == (int32_t)value) { return; }
+        modify_cache[effect_id][param] = (int32_t)value;
+    }
 
     uint8_t msg[6] = {
         0xb5, param, effect_id & 0x7f, 0xa5, lo7(value), hi7(value) };
