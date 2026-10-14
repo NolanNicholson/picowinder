@@ -3,12 +3,14 @@
 #include "pico/stdlib.h"
 #include "hardware/pio.h"
 #include "hardware/uart.h"
+#include "hardware/sync.h"
 
 #include "tusb.h"
 
 #include "ffb_handshake.pio.h"
 #include "read_joystick.pio.h"
 #include "ffb_midi.h"
+#include "watchdog.h"
 #include "bus.h"
 
 #include "config.h"
@@ -41,8 +43,9 @@ uint32_t raw0;
 uint32_t raw1;
 uint64_t joystickStateRaw;
 
-// Completed joystick scans, counted by the read IRQ.
-volatile uint32_t scan_count = 0;
+// Completed joystick scans and the gaps between them, maintained by the read
+// IRQ and consumed by the base-reset watchdog in main(). See watchdog.h.
+volatile struct scan_tracker scans = { 0 };
 
 
 void joystickReadIRQ()
@@ -77,7 +80,7 @@ void joystickReadIRQ()
     report.throttle = joystickState.throttle;
     report.hat = joystickState.hat;
 
-    scan_count++;
+    scan_tracker_on_scan(&scans, time_us_32());
 
     pio_interrupt_clear(pio, 0);
 }
@@ -99,6 +102,19 @@ void hid_task()
 
 static uint offset_handshake;
 static uint offset_readjoy;
+
+// Wait, optionally keeping USB alive (used for re-handshakes mid-session, so the
+// host doesn't see the device stall).
+static void wait_ms(uint32_t ms, bool service_usb)
+{
+    if (!service_usb) { sleep_ms(ms); return; }
+    absolute_time_t done = make_timeout_time_ms(ms);
+    while (!time_reached(done))
+    {
+        tud_task();
+        hid_task();
+    }
+}
 
 // MIDI initialisation sent after the trigger-pulse handshake, as Microsoft's
 // driver does it (see adapt-ffb-joy's SidewinderFFBMIDI.md and
@@ -125,12 +141,36 @@ static const uint8_t init_device_params[] = {
 static const uint8_t init_gain_max[] = { 0xb5, 0x7c, 0x7f, 0xa5, 0x7f, 0x00 };
 static const uint8_t init_stop_all[] = { 0xc5, 0x06 };  // stop all, including the stock auto-center
 
+// Take a base that is already in FFB mode back out of it ("quit application"
+// in the protocol notes). The base stays powered across a Pico reset, and the
+// start-up sequence only works on a base that isn't in FFB mode.
+static void ffb_quit_mode(bool service_usb)
+{
+    static const uint8_t quit[] = { 0xc5, 0x07 };
+    uart_write_blocking(uart0, init_reset, sizeof(init_reset));
+    wait_ms(20, service_usb);
+    uart_write_blocking(uart0, quit, sizeof(quit));
+    for (int pass = 0; pass < 2; pass++)
+    {
+        for (uint8_t ch = 0; ch < 16; ch++)
+        {
+            uint8_t msg[3] = { (uint8_t)(0xb0 | ch), 0x40, 0x00 };
+            uart_write_blocking(uart0, msg, sizeof(msg));
+        }
+    }
+    uart_tx_wait_blocking(uart0);
+    wait_ms(100, service_usb);
+}
+
 // Send the trigger-pulse sequence that switches the Sidewinder into
 // digital/MIDI mode, then initialise it the way Microsoft's driver does.
-static void ffb_handshake(void)
+// If service_usb is set, USB is kept alive while waiting.
+static void ffb_handshake(bool service_usb)
 {
     const PIO pio = pio0;
     const uint sm = 0;
+
+    ffb_quit_mode(service_usb);
 
     pio_sm_set_enabled(pio, sm, false);
     ffb_handshake_program_init(pio, sm, offset_handshake, 100000, PIN_TRIGGER);
@@ -150,21 +190,26 @@ static void ffb_handshake(void)
             pio_sm_put(pio, sm, (pulses[i] - 1) << 16 | (delays[i] - 1));
             i++;
         }
+        else if (service_usb)
+        {
+            tud_task();
+            hid_task();
+        }
     }
 
     // The last group (59 ms delay + 2 pulses) is still being sent.
-    sleep_ms(80);
+    wait_ms(80, service_usb);
     pio_sm_set_enabled(pio, sm, false);
 
     // MIDI start-up, with the driver's delays. Written directly rather than
     // queued: no joystick reads run during the handshake.
     uart_write_blocking(uart0, init_reset, sizeof(init_reset));
-    sleep_ms(20);
+    wait_ms(20, service_usb);
     uart_write_blocking(uart0, init_config, sizeof(init_config));
-    sleep_ms(57);
+    wait_ms(57, service_usb);
     uart_write_blocking(uart0, init_device_params, sizeof(init_device_params));
     uart_write_blocking(uart0, init_reset, sizeof(init_reset));
-    sleep_ms(70);
+    wait_ms(70, service_usb);
     uart_write_blocking(uart0, init_gain_max, sizeof(init_gain_max));
 #ifdef DISABLE_AUTO_CENTER
     uart_write_blocking(uart0, init_stop_all, sizeof(init_stop_all));
@@ -190,6 +235,17 @@ static inline bool uart_tx_idle(uart_inst_t *uart)
     return (uart_get_hw(uart)->fr & UART_UARTFR_BUSY_BITS) == 0;
 }
 
+static void start_read_sm(void)
+{
+    const PIO pio = pio0;
+    const uint sm = 0;
+
+    pio_sm_set_enabled(pio, sm, false);
+    read_joystick_program_init(pio, sm, offset_readjoy, 1000000,
+            PIN_TRIGGER, PIN_CLK, PIN_D0, PIN_D1, PIN_D2);
+    pio_sm_set_enabled(pio, sm, true);
+}
+
 int main()
 {
     tud_init(0);
@@ -203,11 +259,11 @@ int main()
     PIO pio = pio0;
     uint sm = 0;
 
-    // Load both PIO programs up front.
+    // Load both PIO programs up front: the handshake may be re-run later.
     offset_handshake = pio_add_program(pio, &ffb_handshake_program);
     offset_readjoy = pio_add_program(pio, &read_joystick_program);
 
-    ffb_handshake();
+    ffb_handshake(false);
 
     // Read-data PIO program setup.
     // We blow away the FFB-handshake state machine config,
@@ -269,6 +325,11 @@ the trigger is held.
 
 #endif
 
+    // Base-reset watchdog (see watchdog.h). Recovery never touches USB, so the
+    // host keeps its device handle and effect IDs.
+    struct watchdog wd;
+    watchdog_init(&wd, time_us_32(), scans.count);
+
     struct bus bus;
     bus_init(&bus, time_us_32());
 
@@ -278,15 +339,61 @@ the trigger is held.
         tud_task(); // tinyusb device task
         hid_task();
 
+        uint32_t sc = scans.count;
+        uint32_t gap = 0;
+        if (sc != wd.last_scan_count)
+        {
+            uint32_t irq_state = save_and_disable_interrupts();
+            gap = scan_tracker_take_gap(&scans);
+            restore_interrupts(irq_state);
+        }
+
+        enum watchdog_action action = watchdog_poll(&wd, time_us_32(), sc, gap);
+        switch (action)
+        {
+            case WD_REPLAY:
+#ifdef DISABLE_AUTO_CENTER
+                ffb_midi_set_autocenter(uart0, false);
+#endif
+                ffb_midi_replay_state(uart0);
+                break;
+
+            case WD_REINIT:
+                // Anything still queued predates the hang; the replay below
+                // restores the full state.
+                midi_queue_clear();
+                ffb_handshake(true);
+                ffb_midi_replay_state(uart0);
+                start_read_sm();
+                break;
+
+            case WD_KICK:
+                // Kick the read state machine: disable, flush any partial data,
+                // reset internal state, jump back to the program start, re-enable.
+                pio_sm_set_enabled(pio, sm, false);
+                pio_sm_clear_fifos(pio, sm);
+                pio_sm_restart(pio, sm);
+                pio_sm_exec(pio, sm, pio_encode_jmp(offset_readjoy));
+                pio_sm_set_enabled(pio, sm, true);
+                break;
+
+            case WD_NONE:
+                break;
+        }
+        if (action != WD_NONE)
+        {
+            watchdog_done(&wd, action, time_us_32());
+        }
+
         // Interleave stick reads and MIDI so they never overlap on the base.
         uint32_t now = time_us_32();
-        if (bus_should_trigger(&bus, now, scan_count, uart_tx_idle(uart0)))
+        if (bus_should_trigger(&bus, now, scans.count, uart_tx_idle(uart0)))
         {
             pio_sm_put(pio, sm, 0);
         }
         else
         {
-            size_t n = bus_midi_budget(&bus, now, scan_count, midi_queue_len());
+            size_t n = bus_midi_budget(&bus, now, scans.count, midi_queue_len());
             if (n > 0)
             {
                 uint8_t chunk[32];
